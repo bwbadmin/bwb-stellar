@@ -1,0 +1,8 @@
+# Security Audit Reports
+#
+# This directory will contain the smart contract security audit report
+# required before Tranche 3 (Mainnet Launch).
+#
+# Planned auditor: SCF Audit Bank or equivalent
+# Tranche: T3 deliverable
+# See: docs/scf-deliverables.md#tranche-3
