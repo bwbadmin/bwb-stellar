@@ -4,6 +4,11 @@ bwb-main-040626/
 # Internal session handoff — not for public repo
 handoff.md
 
+# IP protection scripts — internal tooling only
+scripts/pre-commit-guard.sh
+scripts/install-hooks.sh
+.github/workflows/ip-guard.yml
+
 # Rust/Cargo build artifacts
 target/
 **/target/
