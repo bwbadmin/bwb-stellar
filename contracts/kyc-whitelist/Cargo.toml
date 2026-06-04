@@ -6,7 +6,7 @@ license = "Apache-2.0"
 description = "BWB KYC whitelist — CVM 88 compliant transfer restrictions on Soroban"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }

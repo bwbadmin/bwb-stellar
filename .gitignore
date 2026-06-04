@@ -12,6 +12,17 @@ scripts/install-hooks.sh
 # Rust/Cargo build artifacts
 target/
 **/target/
+Cargo.lock
+
+# Soroban test snapshots (generated)
+**/test_snapshots/
+
+# Claude Code local settings (personal, not shared)
+.claude/settings.local.json
+.claude/__pycache__/
+
+# Internal SCF draft docs (contain referral codes and team PII)
+docs/scf-interest-form.md
 
 # Node / Bun
 node_modules/
