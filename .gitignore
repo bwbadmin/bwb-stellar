@@ -1,6 +1,9 @@
 # Proprietary core application — never commit
 bwb-main-040626/
 
+# Internal session handoff — not for public repo
+handoff.md
+
 # Rust/Cargo build artifacts
 target/
 **/target/
