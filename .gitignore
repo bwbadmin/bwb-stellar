@@ -1,0 +1,21 @@
+# Proprietary core application — never commit
+bwb-main-040626/
+
+# Rust/Cargo build artifacts
+target/
+**/target/
+
+# Node / Bun
+node_modules/
+**/node_modules/
+.env
+.env.local
+**/.env
+**/.env.local
+
+# Stellar
+.stellar/
+
+# OS
+.DS_Store
+Thumbs.db
