@@ -1,28 +1,28 @@
-# Integration Architecture — BWB + Stellar
+# Arquitetura de integração — BWB + Stellar
 
-This document describes how BWB's existing platform connects to the Stellar network. The integration adds Stellar as a parallel settlement layer alongside the current Base (EVM) deployment.
+Este documento descreve como a plataforma BWB existente se conecta à rede Stellar. A integração adiciona Stellar como camada de liquidação e emissão de tokens para novos produtos, operando em paralelo com a infraestrutura EVM atual.
 
 ---
 
-## System Overview
+## Visão geral do sistema
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    INVESTOR                                  │
-│           Brazil (PIX) · Portugal/EU (EURC)                  │
+│                    INVESTIDOR (Brasil)                        │
+│           PIX → BRZ (Transfero) · Freighter/Albedo           │
 └──────────────────┬──────────────────────────────────────────┘
                    │ HTTPS
                    ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              BWB Platform — app.bwbi.com.br                  │
-│         React 19 + Privy (auth) + Stellar Wallet Adapter     │
+│         React 19 + Privy (auth) + Stellar Wallets Kit        │
 └───────────────────────────┬─────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                   Convex Backend                             │
 │           TypeScript serverless — real-time                  │
-│     IRampProvider interface → TransferoRampProviderImpl      │
+│     IRampProvider → TransferoRampProviderImpl                │
 └──────────┬──────────────────────────────────────────────────┘
            │ BWB Stellar SDK (sdk/src/)
            ▼
@@ -32,137 +32,134 @@ This document describes how BWB's existing platform connects to the Stellar netw
 └──────────┬────────────────┬───────────────────────────────┬─┘
            ▼                ▼                               ▼
   real-estate-token    kyc-whitelist              distribution
-  (one per offering)   (shared registry)          (BRLA yield)
+  (um por oferta)      (registro compartilhado)   (BRZ por holder)
 ```
 
 ---
 
-## Key Components
+## Componentes principais
 
-### 1. Privy Server Wallet — Operator Keypair
+### 1. Privy Server Wallet — keypair do Operator
 
-BWB's existing Privy integration already manages a Platform Server Wallet for EVM operations. For Stellar, the same Privy Server Wallet manages an Ed25519 keypair that acts as the **Operator**.
+A integração Privy atual gerencia um Platform Server Wallet para operações EVM. Para Stellar, o mesmo Privy Server Wallet gerencia um keypair Ed25519 que atua como **Operator** nos contratos Soroban.
 
-The Operator is the hot wallet that:
-- Calls `kyc-whitelist::add` and `remove` when KYC events arrive
-- Calls `real-estate-token::mint` after payment confirmation
-- Triggers `distribution::distribute` on yield events
+O Operator é a carteira quente que:
+- Chama `kyc-whitelist::add` e `remove` quando eventos KYC chegam
+- Chama `real-estate-token::mint` após confirmação de pagamento
+- Dispara `distribution::distribute` nos eventos de rendimento
 
-A separate cold wallet (hardware key) holds the Admin role, controlling contract upgrades and admin handover.
+Uma carteira fria separada (hardware key) mantém o papel Admin — controla atualizações de contrato e transferência de administração.
 
-This mirrors the existing EVM architecture (`PlatformServerWallet` + relay) — no new custody model is required.
+Esse modelo espelha a arquitetura EVM existente (`PlatformServerWallet` + relay). Nenhum novo modelo de custódia é necessário.
 
-### 2. Transfero BaaSic API — BRL Ramp
+### 2. Transfero BaaSic API — rampa PIX → BRZ
 
-Transfero replaces Avenia (which operates on Base/EVM only) as the fiat ramp for Stellar.
+Transfero é a rampa principal para Stellar. A API BaaSic converte pagamentos PIX em BRZ (a stablecoin de real da Transfero, lastreada 1:1 no ativo em reais) diretamente na rede Stellar, sem custódia intermediária adicional.
 
 ```
-Investor → PIX payment
+Investidor → PIX (R$X)
   │
   └── Transfero BaaSic API
-        BRL → BRLA (Stellar, 1:1 peg)
-        BRLA credited to BWB reserve address
+        BRL → BRZ (Stellar, lastro 1:1 em reais)
+        BRZ creditado no endereço operacional BWB
           │
-          └── Convex webhook handler
-                payment confirmed → mint tokens
+          └── Webhook → Convex workpool
+                pagamento confirmado → mint de tokens
 ```
 
-- **BRLA** is Transfero's BRL-pegged stablecoin, native on Stellar
-- **BRZ** is also available on Stellar via Transfero (used for legacy flows)
-- The Convex workpool handles Transfero webhook events with automatic retry
+- **BRZ** é a stablecoin de BRL da Transfero na Stellar, com lastro 1:1 e resgate via PIX
+- O workpool Convex trata webhooks da Transfero com retry automático
+- Acesso à API BaaSic via contrato B2B — sandbox disponível para integração
 
-Transfero API access is via B2B contract — sandbox access is part of T2 deliverables.
+### 3. Abroad — rampa complementar
 
-### 3. Stellar DEX — EURC/BRLA for European Investors
+O [Abroad](https://www.abroad.finance/) é uma rampa BRL↔stablecoin nativa na Stellar. Utilizada como alternativa e para investidores que preferem sacar BRZ de volta para BRL via rota diferente da Transfero.
 
-```
-EU Investor → EUR → EURC (Circle)
-  │
-  └── Stellar DEX atomic path payment
-        EURC → BRLA (no custodian, on-chain price discovery)
-          │
-          └── Same mint flow as Brazilian investors
-```
+### 4. Stellar Wallets Kit — portal do investidor
 
-EURC (Circle) became natively available on Stellar in May 2026 via CCTP. The Stellar DEX provides EURC/BRLA liquidity for cross-border investment flows without any custodial bridge or off-chain settlement.
+Para investidores que preferem usar sua própria carteira Stellar em vez da carteira gerenciada pela plataforma, o Stellar Wallets Kit expõe um adapter Freighter/Albedo no portal BWB.
 
-### 4. BWB Stellar SDK (`sdk/src/`)
+- Investidor conecta a própria carteira Stellar
+- Carteira adicionada ao `kyc-whitelist` após verificação
+- Tokens emitidos diretamente para o endereço self-custodied
 
-The SDK is the TypeScript layer between the Convex backend and Soroban contracts.
+### 5. BWB Stellar SDK (`sdk/src/`)
 
-| Module | Responsibility |
+O SDK é a camada TypeScript entre o backend Convex e os contratos Soroban.
+
+| Módulo | Responsabilidade |
 |---|---|
-| `client.ts` | Soroban RPC connection with multi-endpoint fallback |
-| `token.ts` | `mint`, `transfer`, `balance`, `total_supply`, `get_offering` |
+| `client.ts` | Conexão Soroban RPC com fallback multi-endpoint |
+| `token.ts` | `mint`, `transfer`, `balance`, `total_supply`, `get_offering`, `nav` |
 | `kyc.ts` | `add`, `remove`, `is_ok`, `get_entry` |
-| `anchor.ts` | BRLA/BRZ Transfero integration helpers |
+| `anchor.ts` | Helpers para integração com Transfero (BRZ) e Abroad |
 
-The SDK produces unsigned XDRs for most operations — the Convex backend signs them with the Operator keypair via Privy Server Wallet.
-
----
-
-## Data Flow — Token Issuance (Brazilian Investor)
-
-```
-1.  Investor completes KYC on BWB platform (Avenia — existing)
-2.  KYC approved → Convex mutation fires
-3.  SDK: kyc-whitelist::add(investor_stellar_address, category)
-         signed by Operator keypair (Privy Server Wallet)
-4.  Investor selects offering, confirms investment amount
-5.  PIX payment initiated → Transfero BaaSic API
-6.  Transfero webhook → Convex workpool
-         payment confirmed (BRL received)
-7.  SDK: real-estate-token::mint(investor_stellar_address, token_amount)
-         [internal] kyc-whitelist::is_ok verified → proceeds
-8.  Stellar event → Horizon indexer → frontend balance update
-9.  Investor sees token balance in BWB portal
-```
+O SDK produz XDRs não assinados para a maioria das operações — o backend Convex os assina com o keypair do Operator via Privy Server Wallet.
 
 ---
 
-## Data Flow — Yield Distribution
+## Fluxo completo — subscrição de investidor
 
 ```
-1.  Offering matures / quarterly yield event
-2.  Finance team approves distribution amount (BRLA)
-3.  Convex scheduled action fires
-4.  SDK: distribution::distribute(token_contract, brla_amount)
-         contract reads total_supply
-         iterates all holders
-         sends proportional BRLA to each address
-5.  On-chain distribution log (count, amount, timestamp)
-6.  Investors see BRLA balance increase in Stellar wallet
-7.  Optional: investors bridge BRLA → BRL via Transfero (PIX withdrawal)
+1.  Investidor completa KYC no portal BWB (documentos, biometria)
+2.  KYC aprovado → mutation Convex dispara
+3.  SDK: kyc-whitelist::add(stellar_address, category)
+         assinado pelo keypair Operator (Privy Server Wallet)
+4.  Investidor seleciona oferta, confirma valor de aporte
+5.  Pagamento PIX iniciado → Transfero BaaSic API
+6.  Webhook Transfero → Convex workpool
+         pagamento confirmado (BRL recebido)
+7.  SDK: real-estate-token::mint(stellar_address, token_amount)
+         [interno] kyc-whitelist::is_ok verificado → prossegue
+8.  Evento Stellar → Horizon indexer → atualização de saldo no frontend
+9.  Investidor vê saldo de tokens no portal BWB
 ```
 
 ---
 
-## Environment Configuration
+## Fluxo completo — distribuição de rendimentos
 
-| Variable | Description |
+```
+1.  Oferta vence / evento de rendimento trimestral
+2.  Time financeiro aprova valor de distribuição (BRZ)
+3.  Action agendada Convex dispara
+4.  SDK: distribution::distribute(token_contract, brz_amount)
+         contrato lê total_supply
+         itera todos os holders
+         transfere BRZ proporcional para cada endereço
+5.  Log de distribuição on-chain (contagem, valor, timestamp)
+6.  Investidores veem saldo BRZ aumentado em suas carteiras Stellar
+7.  Opcional: investidores sacam BRZ → BRL via Transfero (PIX)
+```
+
+---
+
+## Configuração de ambiente
+
+| Variável | Descrição |
 |---|---|
-| `STELLAR_NETWORK` | `testnet` or `mainnet` |
-| `SOROBAN_RPC_URL` | Primary RPC endpoint (with fallback list) |
-| `HORIZON_URL` | Horizon API URL |
-| `KYC_CONTRACT_ID` | Deployed kyc-whitelist contract address |
-| `OPERATOR_PUBLIC_KEY` | Operator Stellar public key (Ed25519) |
+| `STELLAR_NETWORK` | `testnet` ou `mainnet` |
+| `SOROBAN_RPC_URL` | Endpoint RPC principal (com lista de fallback) |
+| `HORIZON_URL` | URL da API Horizon |
+| `KYC_CONTRACT_ID` | Endereço do contrato kyc-whitelist deployado |
+| `OPERATOR_PUBLIC_KEY` | Chave pública Stellar do Operator (Ed25519) |
 
-Private keys are never stored in this repository. The Operator private key is managed exclusively by Privy Server Wallet in the BWB private backend.
+Chaves privadas nunca são armazenadas neste repositório. A chave privada do Operator é gerenciada exclusivamente pelo Privy Server Wallet no backend privado BWB.
 
 ---
 
-## Separation of Concerns
+## Separação de responsabilidades
 
 ```
-bwb-stellar (this repo — public)
-  ├── contracts/   Apache 2.0 — permanent open source
-  ├── sdk/         Apache 2.0 — permanent open source
-  └── docs/        Apache 2.0 — permanent open source
+bwb-stellar (este repositório — público)
+  ├── contracts/   Apache 2.0 — código aberto permanente
+  ├── sdk/         Apache 2.0 — código aberto permanente
+  └── docs/        Apache 2.0 — código aberto permanente
 
-bwb-tokenization (private repo)
-  ├── frontend/    React app — proprietary
-  ├── backend/     Convex backend — proprietary
-  └── contracts/   EVM contracts — proprietary
+bwb-tokenization (repositório privado)
+  ├── frontend/    App React — proprietário
+  ├── backend/     Backend Convex — proprietário
+  └── contracts/   Contratos EVM — proprietário
 ```
 
-The private backend consumes the public SDK as a dependency. The Soroban contracts have no dependency on the private backend — they can be used independently by any Stellar project.
+O backend privado consome o SDK público como dependência. Os contratos Soroban não têm dependência do backend privado — podem ser usados de forma independente por qualquer projeto na Stellar.

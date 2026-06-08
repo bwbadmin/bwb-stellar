@@ -1,167 +1,148 @@
 # BWB Real Estate on Stellar
 
-> **CVM-regulated Brazilian real estate tokenization on Stellar — R$4M+ track record, institutional-grade compliance.**
+> **Tokenização imobiliária regulada no Brasil, liquidada na rede Stellar.**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![SCF](https://img.shields.io/badge/SCF-Integration%20Track-brightgreen)](https://communityfund.stellar.org)
-[![Regulation](https://img.shields.io/badge/Regulation-CVM%20Resolution%2088-orange)](https://bwbi.com.br)
+[![Regulation](https://img.shields.io/badge/CVM%20Resolution%2088-Authorized-orange)](https://bwbi.com.br)
+[![Tests](https://img.shields.io/badge/Tests-38%20passing-brightgreen)](contracts/)
 
 ---
 
-## Overview
+## O que é
 
-BWB Digital Assets is a **CVM Resolution 88-authorized** electronic investment platform that tokenizes Brazilian real estate for global investors. We are integrating **Stellar/Soroban** as the core settlement and token issuance layer, bringing regulated real estate securities to the Stellar ecosystem.
+BWB Digital Assets é uma plataforma de investimento autorizada pela CVM (Resolução 88) que tokeniza imóveis brasileiros. Investidores aportam via PIX e recebem tokens que representam participação em ofertas imobiliárias reguladas — com rendimentos distribuídos diretamente em carteira.
 
-### Track Record
+Este repositório contém os contratos Soroban e o SDK TypeScript da integração com a rede Stellar.
 
-| Offering | Raised | IRR p.a. | Status |
+### Histórico de ofertas
+
+| Oferta | Captação | TIR alvo | Status |
 |---|---|---|---|
-| ARTP-HS | R$2.5M | 26.8% | Closed |
-| HAUS-06 | R$1.18M | 20.5% | Closed |
-| ARTP-DT | R$1.5M | 20.0% | Closed |
+| ARTP-HS | R$2,5M | 26,8% a.a. | Encerrada |
+| HAUS-06 | R$1,18M | 20,5% a.a. | Encerrada |
+| ARTP-DT | R$1,5M | 20,0% a.a. | Encerrada |
 
-- **R$4M+** in transaction volume in 2025
-- **Zero defaults**, zero restructurings
-- **7+ institutional partners**
-- **CVM Resolution 88** authorization — Brazil's primary regulation for tokenized securities
-
----
-
-## Why Stellar is Core
-
-Stellar is not a superficial addition to BWB. It addresses fundamental infrastructure limitations of our current EVM deployment:
-
-1. **Cost efficiency** — Soroban smart contracts enable high-frequency micro-distributions to hundreds of token holders at a fraction of EVM gas costs, critical for quarterly yield distributions.
-
-2. **Built-in compliance primitives** — Soroban's native account authorization framework maps directly to CVM 88's KYC-gated transfer requirements.
-
-3. **Native stablecoin settlement** — BRLA (Transfero) exists natively on Stellar. EURC (Circle) arrived on Stellar in May 2026. No bridges required.
-
-4. **Ecosystem alignment** — Stellar's focus on regulated financial services and underserved LATAM markets directly aligns with BWB's mission.
+- **R$4M+** captados em 2025
+- **Zero inadimplências**, zero reestruturações
+- **7+ parceiros institucionais** (incorporadoras e originadores)
+- **CVM Resolução 88** — equivalente à regulação de valores mobiliários tokenizados
 
 ---
 
-## Architecture
+## Por que Stellar
+
+A plataforma BWB opera hoje na rede Base (EVM). Dois problemas concretos motivaram a migração para Stellar:
+
+**Custo de distribuição de rendimentos.** Distribuir rendimentos trimestrais para 100+ investidores na EVM custa entre $50–200 em taxas de rede por lote. No Soroban, a mesma operação custa menos de $0,10. Isso viabiliza distribuições frequentes sem corroer o rendimento dos investidores.
+
+**Liquidação em BRL.** Na rede Stellar, o BRZ — stablecoin da Transfero lastreado 1:1 em reais — existe nativamente. A integração com a API BaaSic da Transfero permite que um pagamento via PIX chegue como BRZ em carteira Stellar sem bridges ou custódia intermediária.
+
+---
+
+## Como funciona
 
 ```
-Investor (Brazil: PIX · Portugal/EU: EURC)
-      │
-      ▼
-BWB Platform (app.bwbi.com.br)
-  React + Privy Auth + Stellar Wallet Adapter
-      │
-      ▼
-Convex Backend ──── Transfero BaaSic API (BRL → BRLA)
-      │                    │
-      │              PIX confirmed
-      ▼                    ▼
-BWB Stellar SDK (sdk/src/) ──── Soroban RPC
-      │
-      ├── real-estate-token  (one per offering)
-      ├── kyc-whitelist      (shared CVM 88 registry)
-      └── distribution       (programmatic BRLA yield)
-```
+Investidor (Brasil)
+  │
+  ├── 1. KYC aprovado na plataforma BWB
+  ├── 2. Endereço Stellar adicionado ao contrato kyc-whitelist
+  ├── 3. Pagamento via PIX → Transfero BaaSic API
+  │         BRL → BRZ (Stellar, lastreado 1:1 em reais)
+  ├── 4. Confirmação do pagamento → mint de tokens
+  │         real-estate-token::mint(endereço, quantidade)
+  └── 5. Tokens aparecem na carteira Stellar do investidor
 
-See [docs/03-integration-architecture.md](docs/03-integration-architecture.md) for full system diagram and data flows.
+Distribuição de rendimentos (trimestral)
+  │
+  └── distribution::distribute(contrato_token, valor_brz)
+        proporcional ao saldo de cada holder → BRZ direto em carteira
+```
 
 ---
 
-## Repository Structure
+## Contratos Soroban
+
+Três contratos implementam a lógica on-chain. Todos em Rust, licença Apache 2.0.
+
+| Contrato | Função | Testes |
+|---|---|---|
+| `kyc-whitelist` | Registro de investidores aprovados — CVM 88 | 16 ✅ |
+| `real-estate-token` | Token da oferta — SEP-0041 completo com KYC gate | 22 ✅ |
+| `distribution` | Distribuição proporcional de BRZ aos holders | T2 |
+
+Veja [docs/02-contracts.md](docs/02-contracts.md) para a especificação completa de cada contrato.
+
+---
+
+## Integrações
+
+| Componente | Papel na plataforma |
+|---|---|
+| [Privy](https://www.privy.io/) | Auth e gerenciamento de keypairs Ed25519 — já em produção na BWB, estendido para Stellar |
+| [Stellar Wallets Kit](https://stellarwalletskit.dev/) | Adapter Freighter/Albedo para o portal do investidor |
+| [Abroad](https://www.abroad.finance/) | Rampa BRL ↔ stablecoin complementar para investidores brasileiros |
+| Transfero BaaSic | PIX → BRZ — liquidação nativa em Stellar |
+
+---
+
+## Estrutura do repositório
 
 ```
 bwb-stellar/
-├── contracts/                  # Soroban smart contracts (Rust) — Apache 2.0
-│   ├── real-estate-token/      # RWA token — CVM 88 compliant issuance
-│   ├── kyc-whitelist/          # KYC-gated transfer restrictions
-│   └── distribution/           # Programmatic yield distributions (BRLA)
-├── sdk/                        # TypeScript — BWB Stellar SDK
-├── scripts/                    # Deploy scripts (testnet + mainnet)
-├── docs/                       # Technical documentation
-└── audit/                      # Security audit reports
+├── contracts/
+│   ├── kyc-whitelist/       # Registro KYC on-chain — CVM 88
+│   ├── real-estate-token/   # Token da oferta — SEP-0041
+│   └── distribution/        # Distribuição de rendimentos em BRZ
+├── sdk/                     # TypeScript — cliente dos contratos
+├── scripts/                 # Deploy testnet + mainnet
+├── docs/                    # Documentação técnica
+└── audit/                   # Relatórios de auditoria
 ```
 
 ---
 
-## Documentation
+## Documentação
 
-| Document | Description |
+| Documento | Conteúdo |
 |---|---|
-| [docs/01-protocol-overview.md](docs/01-protocol-overview.md) | What BWB does on Stellar — use cases BR + PT, compliance model |
-| [docs/02-contracts.md](docs/02-contracts.md) | Contract specs — functions, storage, invariants, CVM 88 enforcement |
-| [docs/03-integration-architecture.md](docs/03-integration-architecture.md) | Transfero + Operator + Soroban integration flows |
-| [docs/scf-deliverables.md](docs/scf-deliverables.md) | SCF tranche structure and verification methods |
-| [docs/kyc-flow.md](docs/kyc-flow.md) | KYC flow — CVM 88 on-chain |
+| [docs/01-protocol-overview.md](docs/01-protocol-overview.md) | Visão geral do protocolo — fluxo de investimento, conformidade CVM 88 |
+| [docs/02-contracts.md](docs/02-contracts.md) | Especificação dos contratos — funções, storage, invariants |
+| [docs/03-integration-architecture.md](docs/03-integration-architecture.md) | Arquitetura de integração — Transfero, Privy, Soroban |
+| [docs/scf-deliverables.md](docs/scf-deliverables.md) | Roadmap e entregas por tranche |
 
 ---
 
-## Open Source
+## Código aberto
 
-All Soroban smart contracts in `contracts/` are licensed **Apache 2.0** and will remain permanently open source. This is a hard commitment — not contingent on SCF approval.
-
-The BWB application (React frontend, Convex backend, EVM contracts) is proprietary and is not part of this repository.
+Todos os contratos Soroban em `contracts/` são licenciados **Apache 2.0** e permanecerão abertos. O código da aplicação BWB (frontend React, backend Convex, contratos EVM) é proprietário e não faz parte deste repositório.
 
 ---
 
-## SCF Grant — Integration Track
-
-This project is being submitted to the **Stellar Community Fund (SCF) Build Award — Integration Track**.
-
-**Official integrations from the SCF Integration List:**
-- [Privy](https://www.privy.io/) — auth + embedded wallets (already in production, extending to Stellar)
-- [Stellar Wallets Kit](https://stellarwalletskit.dev/) — Freighter/Albedo adapter for the investor portal
-- [Abroad](https://www.abroad.finance/) — BRL ↔ stablecoin ramp for Brazilian investors
-
-| Tranche | Milestone | Timeline |
-|---|---|---|
-| T0 (10%) | SCF approval | On award |
-| T1 (20%) | Soroban contracts + SDK + Privy/SWK integrations on testnet | Weeks 1–5 |
-| T2 (30%) | Full PIX→token flow on testnet + distribution contract | Weeks 6–10 |
-| T3 (40%) | Mainnet launch + first live offering + audit | Weeks 11–14 |
-
-See [docs/scf-deliverables.md](docs/scf-deliverables.md) for detailed deliverables and verification methods.
-
----
-
-## Market Opportunity
-
-Brazil's tokenized securities market grew **55x in 3 years**:
-- 2022: R$7M
-- 2025: R$3.9B (861 active offerings)
-- Total addressable market: **$128.6B** in Brazilian real estate
-
-BWB is the **only CVM-authorized platform** actively integrating this institutional-grade pipeline into the Stellar ecosystem.
-
----
-
-## Developer Setup
+## Setup para desenvolvedores
 
 ```bash
-# Clone the repo
 git clone https://github.com/bwbadmin/bwb-stellar.git
 cd bwb-stellar
 
-# Install git hooks (IP guard)
-./scripts/install-hooks.sh
-
-# Build Soroban contracts
+# Rodar testes dos contratos
 cd contracts/kyc-whitelist && cargo test
 cd contracts/real-estate-token && cargo test
 
-# Install SDK dependencies
+# SDK TypeScript
 cd sdk && npm install && npm test
 ```
 
 ---
 
-## License
+## Licença
 
-Apache 2.0 — see [LICENSE](LICENSE)
+Apache 2.0 — veja [LICENSE](LICENSE)
 
 ---
 
-## Contact
+## Contato
 
 - **Website:** [bwbi.com.br](https://bwbi.com.br)
-- **Platform:** [app.bwbi.com.br](https://app.bwbi.com.br)
+- **Plataforma:** [app.bwbi.com.br](https://app.bwbi.com.br)
 - **Email:** contato@bwbi.com.br
-- **Location:** Jaraguá do Sul, SC, Brazil
+- **Localização:** Jaraguá do Sul, SC, Brasil

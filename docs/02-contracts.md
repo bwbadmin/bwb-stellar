@@ -1,229 +1,272 @@
-# Soroban Contracts — Specification
+# Contratos Soroban — Especificação
 
-Three Soroban smart contracts implement BWB's on-chain logic. All contracts are written in Rust, licensed Apache 2.0, and live in `contracts/`.
+Três contratos Soroban implementam a lógica on-chain da BWB. Todos em Rust, licença Apache 2.0, em `contracts/`.
 
 ---
 
-## Contract 1 — `kyc-whitelist`
+## Contrato 1 — `kyc-whitelist`
 
 **Path:** `contracts/kyc-whitelist/src/lib.rs`  
-**Purpose:** On-chain KYC registry enforcing CVM Resolution 88 transfer restrictions  
-**Tranche:** T1 (required for testnet deployment)
+**Função:** Registro de investidores aprovados — base para a conformidade CVM 88  
+**Testes:** 16 passando
 
 ### Storage
 
-| Key | Type | Storage tier | Description |
+| Chave | Tipo | Tier | Descrição |
 |---|---|---|---|
-| `Admin` | `Address` | Instance | Contract administrator (cold wallet) |
-| `PendingAdmin` | `Address` | Instance | Proposed successor admin (two-step handover) |
-| `Operator` | `Address` | Instance | Hot wallet for daily KYC operations |
-| `Entry(Address)` | `WhitelistEntry` | Persistent | KYC approval record per investor |
+| `Admin` | `Address` | Instance | Administrador do contrato (carteira fria) |
+| `PendingAdmin` | `Address` | Instance | Successor proposto (transferência em dois passos) |
+| `Operator` | `Address` | Instance | Carteira quente para operações diárias de KYC |
+| `Entry(Address)` | `WhitelistEntry` | Persistent | Registro de aprovação por investidor |
 
-Persistent storage is used for per-investor entries because investor data must survive ledger compaction. Instance storage is used for governance config (admin, operator).
+Storage persistente para entradas de investidores garante que os dados sobrevivam à compactação de ledgers. Storage de instância para configuração de governança (admin, operator).
 
-### Data Types
+### Tipos de dados
 
 ```rust
 pub enum InvestorCategory {
-    Retail,       // Standard retail — CVM 88 base limits
-    Qualified,    // R$1M+ financial assets
-    Professional, // R$10M+ / institutional
+    Retail,       // Varejo — limites base CVM 88
+    Qualified,    // Qualificado — patrimônio financeiro R$1M+
+    Professional, // Profissional — R$10M+ / institucional
 }
 
 pub struct WhitelistEntry {
     pub investor_category: InvestorCategory,
-    pub approved_at: u64,   // ledger timestamp
-    pub approved_by: Address,
+    pub approved_at: u64,    // timestamp do ledger de aprovação
+    pub approved_by: Address, // endereço que executou a aprovação
 }
 ```
 
-### Functions
+### Funções
 
-**Initialization**
+**Inicialização**
 
-| Function | Auth | Description |
+| Função | Auth | Descrição |
 |---|---|---|
-| `initialize(admin)` | admin | Deploy and set admin address. Panics if called twice. |
+| `initialize(admin)` | admin | Deploy e definição do admin. Pânico se chamado duas vezes. |
 
-**Admin governance**
+**Governança (admin)**
 
-| Function | Auth | Description |
+| Função | Auth | Descrição |
 |---|---|---|
-| `propose_admin(new_admin)` | admin | Step 1 of two-step handover — proposes a successor |
-| `accept_admin()` | pending admin | Step 2 — completes handover, previous admin loses access |
-| `set_operator(operator)` | admin | Set the hot wallet for daily KYC operations |
-| `remove_operator()` | admin | Revoke operator — only admin can operate after this |
+| `propose_admin(new_admin)` | admin | Passo 1 da transferência — propõe successor |
+| `accept_admin()` | pending admin | Passo 2 — conclui transferência; admin anterior perde acesso |
+| `set_operator(operator)` | admin | Define a carteira quente para operações de KYC |
+| `remove_operator()` | admin | Revoga o operator — só admin pode operar após isso |
 
-**KYC operations**
+**Operações KYC (admin ou operator)**
 
-| Function | Auth | Description |
+| Função | Auth | Descrição |
 |---|---|---|
-| `add(caller, address, category)` | caller (admin or operator) | Add investor to whitelist with CVM category |
-| `remove(caller, address)` | caller (admin or operator) | Remove investor — panics if not in whitelist |
+| `add(caller, address, category)` | admin ou operator | Adiciona investidor com categoria CVM |
+| `remove(caller, address)` | admin ou operator | Remove investidor — pânico se não existir |
 
-**Read (no auth)**
+**Leitura (sem auth)**
 
-| Function | Returns | Description |
+| Função | Retorna | Descrição |
 |---|---|---|
-| `is_ok(address)` | `bool` | Check approval — called by `real-estate-token` on every transfer |
-| `get_entry(address)` | `Option<WhitelistEntry>` | Full entry details or None |
-| `get_admin()` | `Address` | Current admin address |
-| `get_operator()` | `Option<Address>` | Current operator or None |
+| `is_ok(address)` | `bool` | Verifica aprovação — chamado pelo `real-estate-token` em toda transferência |
+| `get_entry(address)` | `Option<WhitelistEntry>` | Detalhes completos ou `None` |
+| `get_admin()` | `Address` | Admin atual |
+| `get_operator()` | `Option<Address>` | Operator atual ou `None` |
 
-**TTL management**
+**Gerenciamento de TTL**
 
-| Function | Auth | Description |
+| Função | Auth | Descrição |
 |---|---|---|
-| `extend_ttl()` | none | Extend instance storage TTL (heartbeat — call periodically) |
-| `extend_entry_ttl(address)` | none | Extend TTL for a specific investor entry |
+| `extend_ttl()` | nenhuma | Estende TTL do storage de instância (heartbeat periódico) |
+| `extend_entry_ttl(address)` | nenhuma | Estende TTL da entrada de um investidor específico |
 
-### Events
+### Eventos
 
-| Event | Payload | Trigger |
+| Evento | Payload | Quando |
 |---|---|---|
-| `kyc_add` | `address` | Investor approved |
-| `kyc_rm` | `address` | Investor removed |
-| `adm_prop` | `new_admin` | Admin handover proposed |
-| `adm_new` | `new_admin` | Admin handover completed |
-| `op_set` | `operator` | Operator set |
+| `kyc_add` | `address` | Investidor aprovado |
+| `kyc_rm` | `address` | Investidor removido |
+| `adm_prop` | `new_admin` | Transferência de admin proposta |
+| `adm_new` | `new_admin` | Transferência de admin concluída |
+| `op_set` | `operator` | Operator definido |
 
-### Invariants
+### Invariantes
 
-- Only `Admin` or `Operator` can modify the whitelist
-- `Admin` is always set — contract is unusable without it
-- `Operator` is optional — if unset, only admin can perform KYC operations
-- Admin handover requires two transactions (propose + accept) — prevents accidental lockout
-- `is_ok` is a pure read — no auth, callable by any contract at zero cost
-- Removing an investor preserves the on-chain event trail (audit log intact)
+- Apenas `Admin` ou `Operator` podem modificar o whitelist
+- `Admin` está sempre definido — o contrato não funciona sem ele
+- `Operator` é opcional — se não definido, só o admin opera
+- Transferência de admin requer dois passos (propose + accept) — evita bloqueio acidental
+- `is_ok` é leitura pura — sem auth, chamável por qualquer contrato sem custo adicional
+- Remoção de investidor preserva o histórico de eventos (trilha de auditoria intacta)
 
 ---
 
-## Contract 2 — `real-estate-token`
+## Contrato 2 — `real-estate-token`
 
 **Path:** `contracts/real-estate-token/src/lib.rs`  
-**Purpose:** CVM 88-compliant RWA token — one contract per offering  
-**Tranche:** T1 (core issuance logic)
+**Função:** Token de oferta imobiliária — SEP-0041 completo com KYC gate e conformidade CVM 88  
+**Testes:** 22 passando (incluindo testes cross-contract com kyc-whitelist)
 
 ### Storage
 
-| Key | Type | Storage tier | Description |
+| Chave | Tipo | Tier | Descrição |
 |---|---|---|---|
-| `Admin` | `Address` | Instance | Contract administrator |
-| `KycContract` | `Address` | Instance | Address of kyc-whitelist contract |
-| `TotalSupply` | `i128` | Instance | Aggregate token supply |
-| `Metadata` | `OfferingMetadata` | Instance | Immutable offering details |
-| `Paused` | `bool` | Instance | Emergency pause flag |
-| `Balance(Address)` | `i128` | Persistent | Per-investor token balance |
+| `Admin` | `Address` | Instance | Administrador do contrato |
+| `PendingAdmin` | `Address` | Instance | Successor proposto |
+| `Operator` | `Address` | Instance | Carteira quente para minting |
+| `KycContract` | `Address` | Instance | Endereço do contrato kyc-whitelist |
+| `TotalSupply` | `i128` | Instance | Oferta total de tokens |
+| `Name` | `String` | Instance | Nome do token (ex: "BWB ARTP-HS Token") |
+| `Symbol` | `String` | Instance | Símbolo do token (ex: "ARTP") |
+| `Metadata` | `OfferingMetadata` | Instance | Dados imutáveis da oferta |
+| `Paused` | `bool` | Instance | Flag de pausa de emergência |
+| `Balance(Address)` | `i128` | Persistent | Saldo por investidor |
+| `Allowance(AllowanceKey)` | `AllowanceValue` | Temporary | Autorizações de gasto (SEP-0041) |
 
-### Data Types
+### Tipos de dados
 
 ```rust
 pub struct OfferingMetadata {
-    pub offering_id: String,        // BWB internal ID (e.g. "ARTP-HS")
-    pub property_address: String,   // Brazilian property address
-    pub total_raise: i128,          // Total raise in BRL cents
-    pub target_irr_bps: u32,        // Target IRR in basis points (2080 = 20.80%)
-    pub maturity_date: u64,         // Unix timestamp
-    pub cvm_authorization: String,  // CVM authorization code
+    pub offering_id: String,        // ID interno BWB (ex: "ARTP-HS")
+    pub property_address: String,   // Endereço do imóvel no Brasil
+    pub total_raise: i128,          // Captação total em centavos de BRL
+    pub target_irr_bps: u32,        // TIR alvo em basis points (2080 = 20,80%)
+    pub maturity_date: u64,         // Timestamp Unix do vencimento
+    pub cvm_authorization: String,  // Código de autorização CVM
+}
+
+pub struct AllowanceKey {
+    pub from: Address,
+    pub spender: Address,
+}
+
+pub struct AllowanceValue {
+    pub amount: i128,
+    pub expiration_ledger: u32, // Autorização expira neste ledger
 }
 ```
 
-### Functions
+### Funções SEP-0041 (padrão de token Stellar)
 
-| Function | Auth | Description |
+SEP-0041 é o padrão de token do Soroban, equivalente ao ERC-20 no Ethereum. Todos os wallets Stellar e ferramentas do ecossistema reconhecem contratos que implementam esta interface.
+
+| Função | Auth | Descrição |
 |---|---|---|
-| `initialize(admin, kyc_contract, metadata)` | admin | Deploy with offering details |
-| `mint(to, amount)` | admin | Issue tokens to KYC-approved investor |
-| `transfer(from, to, amount)` | from | Transfer — recipient must be KYC-approved |
-| `balance(id) → i128` | none | Query investor balance |
-| `total_supply() → i128` | none | Query total issued tokens |
-| `get_offering() → OfferingMetadata` | none | Read offering details on-chain |
+| `balance(id) → i128` | nenhuma | Saldo do endereço |
+| `transfer(from, to, amount)` | from | Transferência — destinatário deve ser KYC-aprovado |
+| `transfer_from(spender, from, to, amount)` | spender | Transferência com allowance prévia |
+| `approve(from, spender, amount, expiration_ledger)` | from | Autoriza gasto em nome do holder |
+| `allowance(from, spender) → i128` | nenhuma | Consulta allowance atual |
+| `burn(from, amount)` | from | Queima tokens do próprio saldo |
+| `burn_from(spender, from, amount)` | spender | Queima tokens com allowance prévia |
+| `decimals() → u32` | nenhuma | Retorna `7` (padrão Stellar) |
+| `name() → String` | nenhuma | Nome do token |
+| `symbol() → String` | nenhuma | Símbolo do token |
 
-### CVM 88 Enforcement
+### Funções específicas BWB
 
-`mint` and `transfer` both call `kyc-whitelist::is_ok(address)` before proceeding. If the recipient is not whitelisted, the transaction panics with:
+| Função | Auth | Descrição |
+|---|---|---|
+| `initialize(admin, operator, kyc_contract, name, symbol, metadata)` | admin | Deploy com detalhes da oferta |
+| `mint(caller, to, amount)` | admin ou operator | Emite tokens para investidor KYC-aprovado |
+| `total_supply() → i128` | nenhuma | Total de tokens emitidos |
+| `get_offering() → OfferingMetadata` | nenhuma | Dados da oferta on-chain |
+| `get_admin() → Address` | nenhuma | Admin atual |
+| `get_operator() → Option<Address>` | nenhuma | Operator atual |
+| `is_paused() → bool` | nenhuma | Estado de pausa |
+| `nav() → i128` | nenhuma | NAV por token em centavos de BRL (`total_raise / total_supply`) |
+| `extend_ttl()` | nenhuma | Estende TTL do storage de instância |
+| `extend_balance_ttl(address)` | nenhuma | Estende TTL do saldo de um investidor |
+
+### Governança (admin)
+
+| Função | Auth | Descrição |
+|---|---|---|
+| `propose_admin(new_admin)` | admin | Propõe novo admin |
+| `accept_admin()` | pending admin | Conclui transferência |
+| `set_operator(operator)` | admin | Define carteira quente |
+| `pause()` | admin | Pausa transferências de emergência |
+| `unpause()` | admin | Retoma operação normal |
+
+### Conformidade CVM 88
+
+Toda função que movimenta tokens (`mint`, `transfer`, `transfer_from`, `burn_from`) chama internamente `kyc-whitelist::is_ok(address)` antes de executar. Se o endereço não está no whitelist, a transação é rejeitada:
 
 ```
 Transfer rejected: recipient not KYC-approved (CVM 88)
 ```
 
-This check is enforced at the contract level — no frontend bypass is possible.
+A verificação é cross-contract — o `real-estate-token` invoca o `kyc-whitelist` diretamente via `env.invoke_contract`. Não há como bypassar esse check pelo frontend.
 
-### Events
+### Eventos
 
-| Event | Payload | Trigger |
+| Evento | Payload | Quando |
 |---|---|---|
-| `mint` | `(to, amount)` | Tokens issued |
-| `transfer` | `(from, to, amount)` | Tokens transferred |
+| `mint` | `(to, amount)` | Tokens emitidos |
+| `transfer` | `(from, to, amount)` | Transferência executada |
+| `approve` | `(from, spender, amount)` | Allowance criada |
+| `burn` | `(from, amount)` | Tokens queimados |
 
-### Invariants
+### Invariantes
 
-- `total_supply` = sum of all `Balance` values at all times
-- No balance can go negative (checked before deduction)
-- Only KYC-approved addresses can hold tokens
-- `metadata` is set at initialization and immutable thereafter
-
-### Pending Completions (before mainnet)
-
-- SEP-0041 full interface (`approve`, `allowance`, `burn`, `decimals`, `name`, `symbol`) — required for Stellar wallet compatibility
-- `extend_ttl()` for balance entries and instance storage
-- Admin / Operator split
-- NAV calculation (`total_raise / total_supply`)
+- `total_supply` = soma de todos os `Balance` em todos os momentos
+- Nenhum saldo pode ser negativo (verificado antes de qualquer dedução)
+- Apenas endereços KYC-aprovados podem receber tokens
+- `metadata` é definida na inicialização e imutável depois
+- `decimals` sempre retorna 7 (padrão Stellar)
+- Allowances expiram no ledger definido — não acumulam indefinidamente
 
 ---
 
-## Contract 3 — `distribution`
+## Contrato 3 — `distribution`
 
 **Path:** `contracts/distribution/src/lib.rs`  
-**Purpose:** Programmatic proportional yield distribution to all token holders  
-**Tranche:** T3 (after mainnet launch)
+**Função:** Distribuição proporcional de rendimentos em BRZ a todos os holders  
+**Status:** Spec definida, implementação T2
 
 ### Design
 
-Each distribution cycle:
-1. Admin calls `distribute(token_contract, amount)` with a BRLA amount
-2. Contract reads `total_supply` from `real-estate-token`
-3. For each holder, computes `holder_share = amount × balance / total_supply`
-4. Transfers BRLA from distribution reserve to each holder's Stellar address
-5. Records distribution on-chain (count, amount, timestamp)
+Cada ciclo de distribuição:
 
-All operations are on-chain and auditable. Holders only need a KYC-approved Stellar address — no active claim transaction required.
+1. Admin chama `distribute(token_contract, amount_brz)` com o total de BRZ a distribuir
+2. Contrato lê `total_supply` do `real-estate-token`
+3. Para cada holder: `participação = amount_brz × balance / total_supply`
+4. Transfere BRZ da reserva de distribuição para cada endereço Stellar do holder
+5. Registra a distribuição on-chain (contagem, valor, timestamp)
 
-### Why Soroban for Distributions
+Holders não precisam executar nenhuma transação para receber — o BRZ chega diretamente no endereço Stellar registrado.
 
-On EVM, distributing to 100 holders costs $50–200 in gas. On Soroban, the same operation costs under $0.10. This makes quarterly distributions economically viable at the retail scale BWB operates.
+### Por que isso importa
+
+Na rede EVM atual, distribuir para 100 holders custa $50–200 em taxas por lote. No Soroban, menos de $0,10. Essa diferença torna distribuições trimestrais economicamente viáveis no ticket médio em que a BWB opera (R$10–50K por investidor).
 
 ---
 
-## Contract Interactions
+## Interações entre contratos
 
 ```
-Admin (Operator keypair)
+Operator (Privy Server Wallet)
   │
   ├── kyc-whitelist::add(investor_address, category)
   │
-  └── real-estate-token::mint(investor_address, amount)
+  └── real-estate-token::mint(caller, investor_address, amount)
             │
-            └── [internal] kyc-whitelist::is_ok(investor_address)
-                     returns true → mint proceeds
-                     returns false → transaction rejected
+            └── [interno] kyc-whitelist::is_ok(investor_address)
+                         true  → mint executado
+                         false → transação rejeitada
 ```
 
 ```
-distribution::distribute(token_contract, brla_amount)
+distribution::distribute(token_contract, brz_amount)
   │
   ├── real-estate-token::total_supply()
-  ├── for each holder: real-estate-token::balance(address)
-  └── BRLA::transfer(distribution_contract → holder)
+  ├── para cada holder: real-estate-token::balance(address)
+  └── BRZ::transfer(distribution_contract → holder)
 ```
 
 ---
 
-## Security Considerations
+## Segurança
 
-- All admin functions require `require_auth()` — no function can be called without a valid Stellar signature
-- Emergency pause (`Paused` flag) on `real-estate-token` blocks transfers without affecting balances
-- KYC revocation is immediate — a removed investor cannot receive tokens in the same ledger
-- Upgrade path: contract data keys are designed to be forward-compatible with Soroban upgrade patterns
-
-Full security audit is planned before mainnet deployment (see [scf-deliverables.md](scf-deliverables.md) Tranche 3).
+- Todas as funções de escrita requerem `require_auth()` — nenhuma operação sem assinatura Stellar válida
+- Pausa de emergência (`Paused`) bloqueia transferências sem afetar saldos — dados intactos
+- Revogação de KYC é imediata — investidor removido não pode receber tokens no mesmo ledger
+- Soroban storage tiers evitam expiração silenciosa de dados: balances em Persistent, allowances em Temporary
+- Auditoria de segurança formal planejada antes do deploy mainnet (ver [scf-deliverables.md](scf-deliverables.md))

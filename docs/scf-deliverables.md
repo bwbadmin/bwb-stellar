@@ -48,7 +48,7 @@ No deliverables required. Released upon SCF award.
 
 | # | Deliverable | Verification |
 |---|---|---|
-| 2.1 | Full PIX → stablecoin → token flow on testnet (Abroad sandbox) | End-to-end demo recording |
+| 2.1 | Full PIX → BRZ → token flow on testnet (Transfero BaaSic sandbox) | End-to-end demo recording |
 | 2.2 | `distribution` Soroban contract — deployed on testnet | Contract address on Stellar Expert (testnet) |
 | 2.3 | KYC flow — CVM 88 categories enforced on-chain (Retail/Qualified/Professional) | Compliance test suite in `tests/compliance/` |
 | 2.4 | Convex backend integration — mutations and queries for Stellar | Integration tests passing in CI |
@@ -64,7 +64,7 @@ No deliverables required. Released upon SCF award.
 | 3.1 | Security audit completed (SCF Audit Bank or equivalent) | Audit report in `audit/` on GitHub |
 | 3.2 | All contracts deployed on Stellar **mainnet** | Contract addresses on Stellar Expert (mainnet) |
 | 3.3 | First real estate offering live via Stellar | Offering page on app.bwbi.com.br + on-chain mint evidence |
-| 3.4 | Abroad integration live — Brazilian investors funding via BRL on mainnet | Live transaction on Stellar mainnet |
+| 3.4 | PIX → BRZ integration live — Brazilian investors funding via Transfero on mainnet | Live transaction on Stellar mainnet |
 | 3.5 | SCF impact report published | `docs/scf-impact-report.md` on GitHub |
 
 ---
