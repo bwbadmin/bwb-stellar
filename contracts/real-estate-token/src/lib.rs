@@ -28,6 +28,7 @@ pub struct OfferingMetadata {
     pub offering_id: String,        // BWB internal ID (e.g. "ARTP-HS")
     pub property_address: String,   // Brazilian property address
     pub total_raise: i128,          // Total raise in BRL cents
+    pub max_supply: i128,           // SC-H05: max token units authorized by CVM-88
     pub target_irr_bps: u32,        // Target IRR in basis points (2080 = 20.80%)
     pub maturity_date: u64,         // Unix timestamp of expected maturity
     pub cvm_authorization: String,  // CVM Resolution 88 authorization code
@@ -116,6 +117,7 @@ impl RealEstateToken {
         admin.require_auth();
         env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
         Self::bump_instance(&env);
+        env.events().publish((symbol_short!("adm_prop"),), new_admin); // SC-L01
     }
 
     /// Step 2 of two-step admin handover: pending admin accepts.
@@ -127,6 +129,7 @@ impl RealEstateToken {
         env.storage().instance().set(&DataKey::Admin, &pending);
         env.storage().instance().remove(&DataKey::PendingAdmin);
         Self::bump_instance(&env);
+        env.events().publish((symbol_short!("adm_new"),), pending); // SC-L01
     }
 
     /// Set the operator (hot wallet for minting). Admin only.
@@ -135,6 +138,27 @@ impl RealEstateToken {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Operator, &operator);
         Self::bump_instance(&env);
+        env.events().publish((symbol_short!("op_set"),), operator); // SC-L01
+    }
+
+    /// Update the KYC contract address. Admin only.
+    /// SC-H04: allows compliance logic upgrades without redeploying the token contract.
+    /// CAUTION: ensure the new contract is fully initialized with all existing investors
+    /// before calling — any transfer or mint will immediately use the new KYC gate.
+    pub fn set_kyc_contract(env: Env, new_kyc_contract: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        // SC-X04: probe the new contract implements is_ok before committing;
+        // traps on wrong interface (wrong ABI / uninitialized contract).
+        let _probe: bool = env.invoke_contract(
+            &new_kyc_contract,
+            &symbol_short!("is_ok"),
+            soroban_sdk::vec![&env, admin.clone().into_val(&env)],
+        );
+        let old: Address = env.storage().instance().get(&DataKey::KycContract).unwrap();
+        env.storage().instance().set(&DataKey::KycContract, &new_kyc_contract);
+        Self::bump_instance(&env);
+        env.events().publish((symbol_short!("kyc_upd"),), (old, new_kyc_contract));
     }
 
     /// Pause all transfers and burns. Admin only.
@@ -161,9 +185,18 @@ impl RealEstateToken {
     /// KYC gate: recipient must be in the kyc-whitelist contract (CVM 88).
     pub fn mint(env: Env, caller: Address, to: Address, amount: i128) {
         assert!(amount > 0, "Amount must be positive");
+        Self::require_not_paused(&env); // SC-X03: pause must block minting too
         caller.require_auth();
         Self::require_admin_or_operator(&env, &caller);
         Self::require_kyc_approved(&env, &to);
+
+        // SC-H05: enforce the CVM-88 authorized offering cap stored in metadata.
+        let supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        let metadata: OfferingMetadata = env.storage().instance().get(&DataKey::Metadata).unwrap();
+        assert!(
+            supply + amount <= metadata.max_supply,
+            "Mint exceeds CVM-88 authorized offering cap"
+        );
 
         let balance: i128 = env.storage().persistent()
             .get(&DataKey::Balance(to.clone()))
@@ -176,7 +209,6 @@ impl RealEstateToken {
             PERSISTENT_BUMP_AMOUNT,
         );
 
-        let supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
         env.storage().instance().set(&DataKey::TotalSupply, &(supply + amount));
 
         Self::bump_instance(&env);
@@ -193,11 +225,12 @@ impl RealEstateToken {
     }
 
     /// Transfer tokens from `from` to `to`.
-    /// Requires auth from `from`. Recipient must be KYC-approved (CVM 88).
+    /// Requires auth from `from`. Both parties must be KYC-approved (CVM 88).
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         assert!(amount > 0, "Amount must be positive");
         Self::require_not_paused(&env);
         from.require_auth();
+        Self::require_kyc_approved(&env, &from); // SC-H01: sender KYC verified
         Self::require_kyc_approved(&env, &to);
 
         Self::do_transfer(&env, &from, &to, amount);
@@ -205,11 +238,12 @@ impl RealEstateToken {
     }
 
     /// Transfer tokens on behalf of `from` using a pre-approved allowance.
-    /// Spender must have sufficient allowance. Recipient must be KYC-approved.
+    /// Spender must have sufficient allowance. Both `from` and `to` must be KYC-approved.
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
         assert!(amount > 0, "Amount must be positive");
         Self::require_not_paused(&env);
         spender.require_auth();
+        Self::require_kyc_approved(&env, &from); // SC-H01: sender KYC verified
         Self::require_kyc_approved(&env, &to);
 
         Self::spend_allowance(&env, &from, &spender, amount);
@@ -227,9 +261,10 @@ impl RealEstateToken {
         expiration_ledger: u32,
     ) {
         from.require_auth();
+        Self::require_not_paused(&env); // SC-X07: freeze must also block new approvals
 
         assert!(
-            expiration_ledger >= env.ledger().sequence(),
+            expiration_ledger > env.ledger().sequence(), // SC-H03: strictly future (>= allows TTL=0)
             "Expiration ledger must be in the future"
         );
         assert!(amount >= 0, "Amount must be non-negative");
@@ -388,10 +423,14 @@ impl RealEstateToken {
             &symbol_short!("is_ok"),
             soroban_sdk::vec![env, address.clone().into_val(env)],
         );
-        assert!(approved, "Transfer rejected: recipient not KYC-approved (CVM 88)");
+        assert!(approved, "Transfer rejected: address not KYC-approved (CVM 88)");
     }
 
     fn do_transfer(env: &Env, from: &Address, to: &Address, amount: i128) {
+        // SC-X01: self-transfer would read B, write (B-amount), then overwrite with (B+amount).
+        if from == to {
+            return;
+        }
         let from_balance: i128 = env.storage().persistent()
             .get(&DataKey::Balance(from.clone()))
             .unwrap_or(0);
@@ -401,8 +440,9 @@ impl RealEstateToken {
             .get(&DataKey::Balance(to.clone()))
             .unwrap_or(0);
 
+        let new_from_balance = from_balance - amount;
         env.storage().persistent()
-            .set(&DataKey::Balance(from.clone()), &(from_balance - amount));
+            .set(&DataKey::Balance(from.clone()), &new_from_balance);
         env.storage().persistent()
             .set(&DataKey::Balance(to.clone()), &(to_balance + amount));
 
@@ -412,6 +452,16 @@ impl RealEstateToken {
             PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
+
+        // SC-H02: extend TTL for sender's remaining balance — without this the
+        // sender's entry can expire and the remaining tokens are silently lost.
+        if new_from_balance > 0 {
+            env.storage().persistent().extend_ttl(
+                &DataKey::Balance(from.clone()),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
     }
 
     fn do_burn(env: &Env, from: &Address, amount: i128) {
@@ -471,8 +521,9 @@ mod tests {
         OfferingMetadata {
             offering_id: String::from_str(env, "ARTP-HS"),
             property_address: String::from_str(env, "Rua das Flores, 100, Jaraguá do Sul, SC"),
-            total_raise: 250_000_000, // R$ 2,500,000.00 in cents
-            target_irr_bps: 2680,     // 26.80%
+            total_raise: 250_000_000,  // R$ 2,500,000.00 in cents
+            max_supply: 10_000_000_000, // SC-H05: 1 000 whole tokens at 7 decimals
+            target_irr_bps: 2680,      // 26.80%
             maturity_date: 1_800_000_000,
             cvm_authorization: String::from_str(env, "CVM-88-2024-001"),
         }
@@ -567,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Transfer rejected: recipient not KYC-approved (CVM 88)")]
+    #[should_panic(expected = "Transfer rejected: address not KYC-approved (CVM 88)")]
     fn test_mint_to_non_kyc_address_panics() {
         let (env, _kyc, token, admin, _op) = setup();
         let stranger = Address::generate(&env);
@@ -612,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Transfer rejected: recipient not KYC-approved (CVM 88)")]
+    #[should_panic(expected = "Transfer rejected: address not KYC-approved (CVM 88)")]
     fn test_transfer_to_non_kyc_panics() {
         let (env, kyc, token, admin, _op) = setup();
         let investor = Address::generate(&env);
@@ -790,5 +841,142 @@ mod tests {
         let (env, _kyc, token, _admin, _op) = setup();
         let stranger = Address::generate(&env);
         token.extend_balance_ttl(&stranger);
+    }
+
+    // ── SC-H01: sender KYC check ──────────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Transfer rejected: address not KYC-approved (CVM 88)")]
+    fn test_transfer_from_revoked_sender_panics() {
+        let (env, kyc, token, admin, _op) = setup();
+        let investor_a = Address::generate(&env);
+        let investor_b = Address::generate(&env);
+
+        kyc.add(&admin, &investor_a, &InvestorCategory::Retail);
+        kyc.add(&admin, &investor_b, &InvestorCategory::Retail);
+        token.mint(&admin, &investor_a, &1_000_000_000);
+
+        kyc.remove(&admin, &investor_a); // revoke A's KYC
+        token.transfer(&investor_a, &investor_b, &100_000_000); // must panic
+    }
+
+    #[test]
+    #[should_panic(expected = "Transfer rejected: address not KYC-approved (CVM 88)")]
+    fn test_transfer_from_revoked_sender_via_allowance_panics() {
+        let (env, kyc, token, admin, _op) = setup();
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        kyc.add(&admin, &owner, &InvestorCategory::Retail);
+        kyc.add(&admin, &recipient, &InvestorCategory::Retail);
+        token.mint(&admin, &owner, &1_000_000_000);
+
+        let expiry = env.ledger().sequence() + 1000;
+        token.approve(&owner, &spender, &500_000_000, &expiry);
+
+        kyc.remove(&admin, &owner); // revoke owner's KYC after approval
+        token.transfer_from(&spender, &owner, &recipient, &200_000_000); // must panic
+    }
+
+    // ── SC-H03: approve expiration ledger strictly future ─────────────────────
+
+    #[test]
+    #[should_panic(expected = "Expiration ledger must be in the future")]
+    fn test_approve_current_ledger_panics() {
+        let (env, kyc, token, admin, _op) = setup();
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+
+        kyc.add(&admin, &owner, &InvestorCategory::Retail);
+        token.mint(&admin, &owner, &1_000_000_000);
+
+        let current = env.ledger().sequence();
+        token.approve(&owner, &spender, &100_000_000, &current); // must panic
+    }
+
+    // ── SC-H04: KYC contract update ───────────────────────────────────────────
+
+    #[test]
+    fn test_set_kyc_contract() {
+        let (env, _kyc, token, admin, _op) = setup();
+
+        // Deploy a fresh KYC contract and point the token to it
+        let new_kyc_id = env.register_contract(None, KYCWhitelist);
+        let new_kyc_client = KYCWhitelistClient::new(&env, &new_kyc_id);
+        new_kyc_client.initialize(&admin);
+
+        token.set_kyc_contract(&new_kyc_id); // admin can update KYC contract
+
+        // Minting to an investor only approved in the NEW contract must succeed
+        let investor = Address::generate(&env);
+        new_kyc_client.add(&admin, &investor, &InvestorCategory::Retail);
+        token.mint(&admin, &investor, &1_000_000_000);
+        assert_eq!(token.balance(&investor), 1_000_000_000);
+    }
+
+    // ── SC-X01: self-transfer must be a no-op ────────────────────────────────
+
+    #[test]
+    fn test_self_transfer_is_noop() {
+        let (env, kyc, token, admin, _op) = setup();
+        let investor = Address::generate(&env);
+
+        kyc.add(&admin, &investor, &InvestorCategory::Retail);
+        token.mint(&admin, &investor, &1_000_000_000);
+        token.transfer(&investor, &investor, &500_000_000); // must not inflate balance
+
+        assert_eq!(token.balance(&investor), 1_000_000_000);
+        assert_eq!(token.total_supply(), 1_000_000_000);
+    }
+
+    // ── SC-X03: pause must block minting ─────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn test_mint_when_paused_panics() {
+        let (env, kyc, token, admin, _op) = setup();
+        let investor = Address::generate(&env);
+
+        kyc.add(&admin, &investor, &InvestorCategory::Retail);
+        token.pause();
+        token.mint(&admin, &investor, &1_000_000_000);
+    }
+
+    // ── SC-X07: pause must block approve ─────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn test_approve_when_paused_panics() {
+        let (env, kyc, token, admin, _op) = setup();
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+
+        kyc.add(&admin, &owner, &InvestorCategory::Retail);
+        token.mint(&admin, &owner, &1_000_000_000);
+        token.pause();
+        let expiry = env.ledger().sequence() + 1000;
+        token.approve(&owner, &spender, &500_000_000, &expiry);
+    }
+
+    // ── SC-H05: CVM-88 authorized offering cap ────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Mint exceeds CVM-88 authorized offering cap")]
+    fn test_mint_exceeds_cap_panics() {
+        let (env, kyc, token, admin, _op) = setup();
+        let investor = Address::generate(&env);
+        kyc.add(&admin, &investor, &InvestorCategory::Retail);
+        // max_supply = 10_000_000_000; try to mint one unit beyond the cap
+        token.mint(&admin, &investor, &10_000_000_001);
+    }
+
+    #[test]
+    fn test_mint_exactly_at_cap_succeeds() {
+        let (env, kyc, token, admin, _op) = setup();
+        let investor = Address::generate(&env);
+        kyc.add(&admin, &investor, &InvestorCategory::Retail);
+        token.mint(&admin, &investor, &10_000_000_000); // exactly at cap — must succeed
+        assert_eq!(token.total_supply(), 10_000_000_000);
     }
 }
