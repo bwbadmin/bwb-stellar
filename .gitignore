@@ -1,5 +1,6 @@
 # Proprietary core application — never commit
 bwb-main-040626/
+bwb-main-120626/
 
 # Internal session handoff — not for public repo
 handoff.md
@@ -21,8 +22,9 @@ Cargo.lock
 .claude/settings.local.json
 .claude/__pycache__/
 
-# Internal SCF draft docs (contain referral codes and team PII)
+# Internal SCF draft docs (contain referral codes, team PII, and internal pitch materials)
 docs/scf-interest-form.md
+docs/scf-pitch-structure.md
 
 # Node / Bun
 node_modules/
